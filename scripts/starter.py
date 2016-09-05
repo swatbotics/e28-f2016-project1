@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-import roslib; roslib.load_manifest('lab1b')
+import roslib; roslib.load_manifest('project1')
 import rospy
 import random
 from geometry_msgs.msg import Twist
