@@ -1,103 +1,133 @@
 #!/usr/bin/env python
+
 import roslib; roslib.load_manifest('project1')
 import rospy
 import random
+
 from geometry_msgs.msg import Twist
 from kobuki_msgs.msg import SensorState
 
 # control at 100Hz
 CONTROL_PERIOD = rospy.Duration(0.01)
 
-# change actions every 0.5s
-ACTION_DURATION = rospy.Duration(0.5)
+# react to bumpers for 1 second
+BUMPER_DURATION = rospy.Duration(1.0)
 
-# minimum duration of safety stop
-STOP_DURATION = rospy.Duration(1.0)
+# random actions should last 0.5 second
+RANDOM_ACTION_DURATION = rospy.Duration(0.5)
 
-# define a class to handle our simple controller
+# our controller class
 class Controller:
 
-    # initialize our controller
+    # called when an object of type Controller is created
     def __init__(self):
 
-        # initialize our ROS node
+        # initialize rospy
         rospy.init_node('starter')
 
         # set up publisher for commanded velocity
         self.cmd_vel_pub = rospy.Publisher('/mobile_base/commands/velocity',
                                            Twist)
 
+        # start out in wandering state
+        self.state = 'wandering'
+
+        # pick out a random action to do when we start driving
+        self.pick_random_action()
+
+        # we will stop driving if picked up or about to drive off edge
+        # of something
+        self.cliff_alert = 0
+
         # set up subscriber for sensor state for bumpers/cliffs
         rospy.Subscriber('/mobile_base/sensors/core',
                          SensorState, self.sensor_callback)
 
-        # set up timer to update our random action every so often
-        rospy.Timer(ACTION_DURATION,
-                    self.update_random_action)
+        # TODO: set up other publishers/subscribers here if necessary
 
-        # set up our trivial 'state machine' controller
-        rospy.Timer(CONTROL_PERIOD,
-                    self.control_callback)
+        # set up control timer at 100 Hz
+        rospy.Timer(CONTROL_PERIOD, self.control_callback)
 
-        # record whether we should stop for safety
-        self.should_stop = 0
-        self.time_of_stop = rospy.get_rostime() - STOP_DURATION
+        # set up timer for random actions at 2 hz
+        rospy.Timer(RANDOM_ACTION_DURATION, self.pick_random_action)
 
-        # set up random wander
-        self.state = 'wander'
-        self.update_random_action()
-
-    # called when sensor msgs received - just copy sensor readings to
-    # class member variables
+    # called whenever sensor messages are received
     def sensor_callback(self, msg):
 
-        if msg.bumper & SensorState.BUMPER_LEFT:
-            rospy.loginfo('***LEFT BUMPER***')
+        # set cliff alert
+        self.cliff_alert = msg.cliff
+
+        # ignore bumper if we are already reacting to it
+        if self.state in ['backward', 'turn_left', 'turn_right']:
+            return
+
+        # see what we should do next
+        next_state = None
+
         if msg.bumper & SensorState.BUMPER_CENTRE:
-            rospy.loginfo('***MIDDLE BUMPER***')
-        if msg.bumper & SensorState.BUMPER_RIGHT:
-            rospy.loginfo('***RIGHT BUMPER***')
-        if msg.cliff:
-            rospy.loginfo('***CLIFF***')
+            next_state = 'backward'
+        elif msg.bumper & SensorState.BUMPER_LEFT:
+            next_state = 'turn_right'
+        elif msg.bumper & SensorState.BUMPER_RIGHT:
+            next_state = 'turn_left'
 
-        if msg.bumper or msg.cliff:
-            self.should_stop = True
-            self.time_of_stop = rospy.get_rostime()
-        else:
-            self.should_stop = False
+        # if bumped, go to next state
+        if next_state is not None:
+            
+            self.state = next_state
 
+            # in 1 second, finish this state
+            rospy.Timer(BUMPER_DURATION, self.bumper_done, oneshot=True)
+                            
+    # called when we are done with a bumper reaction
+    def bumper_done(self, timer_event=None):
 
-    # called periodically to update our current random action
-    def update_random_action(self, timer_event=None):
-        self.random_action = Twist()
-        self.random_action.linear.x = random.uniform(0.1, 0.2)
-        self.random_action.angular.z = random.uniform(-1.0, 1.0)
+        # if we just backed up, time to turn
+        if self.state == 'backward':
+            
+            # go to turning state
+            self.state = 'turn_left'
+            # reset again in a second
+            rospy.Timer(BUMPER_DURATION, self.bumper_done, oneshot=True)
+                        
+        else: # we just turned, so go return to wandering
+            
+            self.state = 'wander'
 
-    # called periodically to do top-level coordination of behaviors
+    # called when it's time to choose a new random wander direction
+    def pick_random_action(self, timer_event=None):
+
+        self.wander_action = Twist()
+        self.wander_action.linear.x = random.uniform(0.2, 0.3)
+        self.wander_action.angular.z = random.uniform(-1.0, 1.0)
+    
+    # called 100 times per second
     def control_callback(self, timer_event=None):
 
-        # initialize vel to 0, 0
+        # initialize commanded vel to 0, 0
         cmd_vel = Twist()
 
-        time_since_stop = rospy.get_rostime() - self.time_of_stop
+        # only set commanded velocity to non-zero if not picked up:
+        if not self.cliff_alert:
 
-        if self.should_stop or time_since_stop < STOP_DURATION:
-            rospy.loginfo('stopped')
-        elif self.state == 'wander':
-            cmd_vel = self.random_action
-        else:
-            rospy.logerror('invalid state {0}'.format(self.state))
-                
+            # state maps straightforwardly to command
+            if self.state == 'backward':
+                cmd_vel.linear.x = -0.3
+            elif self.state == 'turn_left':
+                cmd_vel.angular.z = 1.5
+            elif self.state == 'turn_right':
+                cmd_vel.angular.z = -1.5
+            else: # forward
+                cmd_vel = self.wander_action
+
         self.cmd_vel_pub.publish(cmd_vel)
-
+        
     # called by main function below (after init)
     def run(self):
         
-        # timers and callbacks are already set up, so just spin
-        rospy.spin()
-
+        # timers and callbacks are already set up, so just spin.
         # if spin returns we were interrupted by Ctrl+C or shutdown
-        rospy.loginfo('goodbye')
+        rospy.spin()
 
 
 # main function
