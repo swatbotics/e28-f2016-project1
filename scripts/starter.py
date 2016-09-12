@@ -30,7 +30,7 @@ class Controller:
                                            Twist)
 
         # start out in wandering state
-        self.state = 'wandering'
+        self.state = 'wander'
 
         # pick out a random action to do when we start driving
         self.pick_random_action()
