@@ -27,7 +27,7 @@ class Controller:
 
         # set up publisher for commanded velocity
         self.cmd_vel_pub = rospy.Publisher('/mobile_base/commands/velocity',
-                                           Twist)
+                                           Twist, queue_size=1)
 
         # start out in wandering state
         self.state = 'wander'
